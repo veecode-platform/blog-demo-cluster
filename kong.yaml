@@ -13,7 +13,7 @@ admin:
       konghq.com/strip-path: "true"
       kubernetes.io/tls-acme: "true"
     enabled: true
-    hostname: manager.blog-demo-cluster.vkpr.platform.vee.codes
+    hostname: manager.demo.vee.codes
     ingressClassName: kong
     path: /
     # tls: admin-kong-cert
@@ -25,9 +25,9 @@ clustertelemetry:
 enterprise:
   enabled: false
 env:
-  admin_gui_api_url: https://manager.blog-demo-cluster.vkpr.platform.vee.codes
+  admin_gui_api_url: https://manager.demo.vee.codes
   admin_gui_path: /manager
-  admin_gui_url: https://manager.blog-demo-cluster.vkpr.platform.vee.codes/manager
+  admin_gui_url: https://manager.demo.vee.codes/manager
   database: postgres
   log_level: notice
   pg_database: kong
@@ -40,7 +40,7 @@ env:
   pg_port: 5432
   pg_user: postgres
   portal: false
-  proxy_url: https://blog-demo-cluster.vkpr.platform.vee.codes
+  proxy_url: https://demo.vee.codes
   tracing_instrumentations: all
   tracing_sampling_rate: 1
 image:
@@ -67,7 +67,7 @@ manager:
       # konghq.com/protocols: https
       kubernetes.io/tls-acme: "true"
     enabled: true
-    hostname: manager.blog-demo-cluster.vkpr.platform.vee.codes
+    hostname: manager.demo.vee.codes
     ingressClassName: kong
     path: /manager
     # tls: manager-kong-cert
@@ -84,7 +84,7 @@ postgresql:
   enabled: false
 proxy:
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: blog-demo-cluster.vkpr.platform.vee.codes
+    external-dns.alpha.kubernetes.io/hostname: demo.vee.codes
   enabled: true
   http:
     containerPort: 8000

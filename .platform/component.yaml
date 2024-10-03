@@ -4,7 +4,7 @@ metadata:
   name: "blog-demo-cluster"
   environment:
     cluster_type: ec2
-    domain: vkpr.platform.vee.codes
+    domain: demo.vee.codes
     ingress_type: kong
     certificate_account_email: platformss@vee.codes
     certificate_environment_type: staging

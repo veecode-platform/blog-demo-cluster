@@ -137,22 +137,6 @@ resource "aws_eip_association" "eip_assoc" {
   allocation_id = aws_eip.webip.id
 }
 
-resource "aws_route53_record" "sub_domain_wildcard" {
-  zone_id = data.aws_route53_zone.selected.zone_id
-  name    = "*.${local.config.cluster_name}.${data.aws_route53_zone.selected.name}"
-  type    = "A"
-  ttl     = "300"
-  records = ["${aws_eip.webip.public_ip}"]
-}
-
-resource "aws_route53_record" "sub_domain" {
-  zone_id = data.aws_route53_zone.selected.zone_id
-  name    = "${local.config.cluster_name}.${data.aws_route53_zone.selected.name}"
-  type    = "A"
-  ttl     = "300"
-  records = ["${aws_eip.webip.public_ip}"]
-}
-
 ### OUTPUT
 
 output "instance_ip_addr" {
