@@ -85,13 +85,6 @@ jobs:
           sed -i "s|$CERTIFICATE|    insecure-skip-tls-verify: true|g" ~/.kube/config
           sed -i "s|0.0.0.0|${{ env.Host }}|g" ~/.kube/config
 
-      - name: Configure Cluster on ArgoCD
-        run: |  
-          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
-          rm argocd-linux-amd64
-          argocd cluster add k3d-blog-demo-cluster --server argocd.apr.vee.codes --auth-token ${{ secrets.ARGOCD_TOKEN }}
-
       - name: Upload kube config
         uses: actions/upload-artifact@v4
         with:
