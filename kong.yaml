@@ -1,0 +1,106 @@
+admin:
+  annotations:
+    konghq.com/plugins: kong-admin-basicauth
+  enabled: true
+  http:
+    containerPort: 8001
+    enabled: true
+    servicePort: 8001
+  ingress:
+    annotations:
+      konghq.com/plugins: kong-admin-basicauth
+      # konghq.com/protocols: https
+      konghq.com/strip-path: "true"
+      kubernetes.io/tls-acme: "true"
+    enabled: true
+    hostname: manager.blog-demo-cluster.vkpr.platform.vee.codes
+    ingressClassName: kong
+    path: /
+    # tls: admin-kong-cert
+  tls:
+    enabled: false
+  type: ClusterIP
+clustertelemetry:
+  enabled: true
+enterprise:
+  enabled: false
+env:
+  admin_gui_api_url: https://manager.blog-demo-cluster.vkpr.platform.vee.codes
+  admin_gui_path: /manager
+  admin_gui_url: https://manager.blog-demo-cluster.vkpr.platform.vee.codes/manager
+  database: postgres
+  log_level: notice
+  pg_database: kong
+  pg_host: postgres-postgresql.vkpr
+  pg_password:
+    valueFrom:
+      secretKeyRef:
+        key: postgres-password
+        name: postgres-postgresql
+  pg_port: 5432
+  pg_user: postgres
+  portal: false
+  proxy_url: https://blog-demo-cluster.vkpr.platform.vee.codes
+  tracing_instrumentations: all
+  tracing_sampling_rate: 1
+image:
+  repository: kong/kong-gateway
+  tag: 3.4.3.7-20240423-amazonlinux-2023
+ingressController:
+  enabled: true
+  env:
+    kong_admin_tls_skip_verify: true
+  ingressClass: kong
+  rbac:
+    create: true
+manager:
+  annotations:
+    konghq.com/plugins: kong-admin-basicauth
+  enabled: true
+  http:
+    containerPort: 8002
+    enabled: true
+    servicePort: 8002
+  ingress:
+    annotations:
+      konghq.com/plugins: kong-admin-basicauth
+      # konghq.com/protocols: https
+      kubernetes.io/tls-acme: "true"
+    enabled: true
+    hostname: manager.blog-demo-cluster.vkpr.platform.vee.codes
+    ingressClassName: kong
+    path: /manager
+    # tls: manager-kong-cert
+  tls:
+    enabled: false
+  type: ClusterIP
+podLabels:
+  app.kubernetes.io/managed-by: vkpr
+portal:
+  enabled: false
+portalapi:
+  enabled: false
+postgresql:
+  enabled: false
+proxy:
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: blog-demo-cluster.vkpr.platform.vee.codes
+  enabled: true
+  http:
+    containerPort: 8000
+    enabled: true
+    servicePort: 80
+  tls:
+    containerPort: 8443
+    enabled: true
+    servicePort: 443
+  type: LoadBalancer
+serviceMonitor:
+  enabled: true
+  namespace: vkpr
+  interval: 30s
+  scrapeTimeout: 30s
+  labels:
+    release: prometheus-stack 
+  targetLabels: 
+    - prometheus-stack

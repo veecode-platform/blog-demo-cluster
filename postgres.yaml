@@ -1,0 +1,11 @@
+volumePermissions:
+  enabled: true
+primary:
+  persistence:
+    size: 8Gi
+fullnameOverride: postgres-postgresql
+global:
+  postgresql:
+    auth:
+      postgresPassword: vkpr123
+      database: kong

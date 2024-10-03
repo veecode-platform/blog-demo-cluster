@@ -1,0 +1,24 @@
+alertmanager:
+  enabled: false
+  ingress:
+    enabled: false
+grafana:
+  enabled: false
+prometheus:
+  enabled: true
+  ingress:
+    enabled: false
+  prometheusSpec:
+    enableRemoteWriteReceiver: true
+    externalLabels:
+      cluster: blog-demo-cluster
+    remoteWrite:
+    - name: prometheus-otlp-central
+      sendExemplars: true
+      url: http://34.199.187.50:30002/api/v1/write
+    scrapeInterval: 10s
+prometheus-node-exporter:
+  hostRootFsMount:
+    enabled: false
+prometheusOperator:
+  enabled: true

@@ -1,0 +1,26 @@
+name: Stop Instance
+
+on:
+  workflow_dispatch:
+env:
+  PORT: 6550
+  USERNAME: ec2-user   
+jobs:
+  Stop_Instance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2        
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Stop Instance
+        run: |
+          ID_INSTANCE=`aws ec2 describe-instances --filters "Name=tag-key,Values=Name" "Name=tag-value,Values=blog-demo-cluster" --query "Reservations[*].Instances[*].InstanceId" --output text`
+          echo "Stop Instance blog-demo-cluster"
+          aws ec2 stop-instances --instance-ids $ID_INSTANCE
+

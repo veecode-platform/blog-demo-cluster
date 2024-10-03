@@ -1,0 +1,16 @@
+apiVersion: configuration.konghq.com/v1
+kind: KongClusterPlugin
+metadata:
+ name: global-acme
+ annotations:
+   kubernetes.io/ingress.class: kong
+ labels:
+   global: "true"
+config:
+  storage: kong
+  allow_any_domain: true
+  tos_accepted: true
+  fail_backoff_minutes: 1
+  account_email: 'platformss@vee.codes'
+  api_uri: https://acme-staging-v02.api.letsencrypt.org/directory  
+plugin: acme

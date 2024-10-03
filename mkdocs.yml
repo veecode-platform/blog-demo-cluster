@@ -1,0 +1,8 @@
+site_name: blog-demo-cluster
+site_description: Cluster EC2 made with Platform Template.
+
+nav:
+  - Introduction: index.md
+
+plugins:
+  - techdocs-core

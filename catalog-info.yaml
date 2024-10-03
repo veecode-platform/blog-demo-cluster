@@ -1,0 +1,8 @@
+apiVersion: backstage.io/v1alpha1
+kind: Location
+metadata:
+  name: blog-demo-cluster-location
+  description: Location to import all blog-demo-cluster catalog components
+spec:
+  targets:
+    - ./.platform/*.yaml

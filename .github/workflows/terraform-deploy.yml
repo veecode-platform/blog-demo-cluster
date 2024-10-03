@@ -1,0 +1,414 @@
+name: Create
+
+on:
+  workflow_dispatch:
+
+env:
+  PORT: 6550
+  USERNAME: ec2-user
+  CLUSTER_NAME: blog-demo-cluster
+  SERVICE_ACCOUNT_NAMESPACE: ${{ github.repository_owner }}
+  DEVPORTAL_CLUSTER_NAME: "dd69495e-d62a-426d-aa00-b4d71e43581b"
+jobs:
+  apply:
+    name: Create Cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .terraform/**
+            .terraform.lock.hcl
+            plan.cache
+          key: terraform-lock-${{ github.head_ref || github.ref_name }}
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Terraform plan
+        run: |
+          terraform init
+          terraform plan -no-color -out plan_cache.json 
+
+      - name: Terraform apply
+        run: |
+          terraform apply -input=false -no-color -auto-approve plan_cache.json
+
+  kubeconfig:
+    name: Kubeconfig Configuration
+    runs-on: ubuntu-latest
+    needs: apply
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Write secret to file
+        run: |
+          echo "${{ secrets.KEYPAIR }}" > cert.pem
+          chmod 600 cert.pem
+          
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Waiting for cluster to be ready
+        run: |
+          HOST=`aws ec2 describe-instances --filters 'Name=tag:Name,Values=${{ env.CLUSTER_NAME }}'   --output text --query 'Reservations[*].Instances[*].PublicIpAddress'`
+          while ! nc -z $HOST $PORT; do
+            echo "waiting for cluster to be ready..."
+            sleep 2
+          done
+          echo "Cluster Ready!"
+          echo "Host=$HOST" >> $GITHUB_ENV
+
+      - name: Generate kube config with k3d
+        run: |
+           ssh -i ./cert.pem -o StrictHostKeyChecking=no $USERNAME@${{  env.Host }} "k3d kubeconfig get blog-demo-cluster > config"
+ 
+      - name: Download kube config
+        run: |
+           mkdir -p ~/.kube
+           scp -i ./cert.pem -o StrictHostKeyChecking=no $USERNAME@${{ env.Host }}:config ~/.kube/config
+ 
+      - name: Print downloaded config
+        run: |  
+          CERTIFICATE=`cat  ~/.kube/config |grep certificate-authority-data `
+          sed -i "s|$CERTIFICATE|    insecure-skip-tls-verify: true|g" ~/.kube/config
+          sed -i "s|0.0.0.0|${{ env.Host }}|g" ~/.kube/config
+
+      - name: Configure Cluster on ArgoCD
+        run: |  
+          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+          rm argocd-linux-amd64
+          argocd cluster add k3d-blog-demo-cluster --server argocd.apr.vee.codes --auth-token ${{ secrets.ARGOCD_TOKEN }}
+
+      - name: Upload kube config
+        uses: actions/upload-artifact@v4
+        with:
+          name: kube-config
+          path: ~/.kube/config
+
+      - name: Write Catalogo Info
+        run: |
+          yq e '.metadata.environment.public_ip = "${{ env.Host }}"' -i .platform/component.yaml
+          yq -e '.metadata.annotations["cluster/instructions"] = "# Run the following commands to import the kubeconfig:
+            ssh -i ./cert.pem -o StrictHostKeyChecking=no $USERNAME@$${{ env.Host }} \"mkdir -p .kube && k3d kubeconfig get k3s > ~/.kube/config\"
+            scp -i ./cert.pem $USERNAME@$${{ env.Host }}:~/.kube/config ~/.kube/config-${{ env.CLUSTER_NAME }}
+            yq -e '\''del(.clusters[0].cluster.certificate-authority-data) | .clusters[0].cluster.insecure-skip-tls-verify=true | .clusters[].cluster.server |= sub(\"0.0.0.0\", \"${{ env.Host }}\")'\'' -i ~/.kube/config-${{ env.CLUSTER_NAME }}
+            export KUBECONFIG=~/.kube/config-${{ env.CLUSTER_NAME }}
+            kubectl get pods -A
+          "' -i .platform/component.yaml
+          cat ./.platform/component.yaml
+
+      - name: Upload component.yaml
+        uses: actions/upload-artifact@v4
+        with:
+          name: component-catalog
+          path: .platform/component.yaml
+
+  service-account:
+    name: Service Account Configuration
+    runs-on: ubuntu-latest
+    needs: kubeconfig
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kube-config
+          path: ~/.kube
+
+      - name: Download component.yaml
+        uses: actions/download-artifact@v4
+        with:
+          name: component-catalog
+          path: .platform
+
+      - name: Apply Service Account to the Cluster and load Env Vars
+        run: |
+          kubectl get namespace $SERVICE_ACCOUNT_NAMESPACE || kubectl create namespace $SERVICE_ACCOUNT_NAMESPACE
+          curl -s https://veecode-platform.github.io/support/references/devportal/k8s-service-account.yaml | \
+            sed "s/default/$SERVICE_ACCOUNT_NAMESPACE/g" | \
+            kubectl apply -f -
+          SERVICE_ACCOUNT_NAME=$(curl -s https://veecode-platform.github.io/support/references/devportal/k8s-service-account.yaml | yq eval '. | select(.kind == "ServiceAccount") | .metadata.name')
+          K8S_SERVER_CERTIFICATE=$(cat ~/.kube/config | yq -r ".clusters[] | select(.name == \"$(cat ~/.kube/config | yq -r '.current-context')\").cluster.certificate-authority-data // \"\"")
+          K8S_SERVER_HOST=$(cat ~/.kube/config | yq -r ".clusters[] | select(.name == \"$(cat ~/.kube/config | yq -r '.current-context')\").cluster.server")
+          SERVICE_ACCOUNT_TOKEN=$(kubectl create token ${SERVICE_ACCOUNT_NAME} -n ${SERVICE_ACCOUNT_NAMESPACE} --duration=87600h)
+          echo "SERVICE_ACCOUNT_NAME=$SERVICE_ACCOUNT_NAME" >> $GITHUB_ENV
+          echo "SERVICE_ACCOUNT_TOKEN=$SERVICE_ACCOUNT_TOKEN" >> $GITHUB_ENV
+          echo "K8S_SERVER_CERTIFICATE=$K8S_SERVER_CERTIFICATE" >> $GITHUB_ENV
+          echo "K8S_SERVER_HOST=$K8S_SERVER_HOST" >> $GITHUB_ENV
+
+      - name: GitHub Action for DigitalOcean - doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_TOKEN }}
+
+      - name: Configure kubectl for the DigitalOcean Cluster
+        run: |
+          doctl kubernetes cluster kubeconfig save ${{ env.DEVPORTAL_CLUSTER_NAME }}
+
+      - name: Check current kubectl context
+        run: |
+          CURRENT_CONTEXT=$(kubectl config current-context)
+          echo "Contexto atual do kubectl: $CURRENT_CONTEXT"
+          if [[ "$CURRENT_CONTEXT" != *"do-nyc3-vkpr-cluster-apr"* ]]; then
+            echo "Erro: o contexto atual do kubectl não está configurado para o cluster da DigitalOcean."
+            exit 1
+          fi
+
+      - name: Create Secret in the DigitalOcean Cluster
+        run: |
+          kubectl delete secret ${{ env.CLUSTER_NAME }}-secret -n ${{ github.repository_owner }} || true
+          kubectl create secret generic ${{ env.CLUSTER_NAME }}-secret -n ${{ github.repository_owner }} --from-literal=token=${{ env.SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Write Catalogo Info
+        run: |
+          yq e '''
+          .metadata.annotations."veecode/cluster-name" = "${{ env.CLUSTER_NAME }}" |
+          .metadata.annotations."kubernetes.io/secret-name" = "${{ env.CLUSTER_NAME }}-secret" |
+          .metadata.annotations."kubernetes.io/secret-namespace" = "${{ github.repository_owner }}" |
+          .metadata.annotations."kubernetes.io/auth-provider" = "custom" |
+          .metadata.annotations."kubernetes.io/api-server" = "${{ env.K8S_SERVER_HOST }}"
+          ''' -i .platform/component.yaml
+          
+          if [[ -z "${K8S_SERVER_CERTIFICATE// }" ]]; then
+            yq e '.metadata.annotations."kubernetes.io/skip-tls-verify" = "true"' -i .platform/component.yaml
+          else
+            yq e '.metadata.annotations."kubernetes.io/caData" = "$K8S_SERVER_CERTIFICATE"' -i .platform/component.yaml
+          fi
+          yq e '.metadata.annotations."kubernetes.io/skip-metrics-lookup" = "false"' -i .platform/component.yaml
+
+      - name: Publish catalog info
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          repository: ".platform/"
+          commit_user_name: veecode-bot
+          commit_user_email: github-admin@vee.codes
+          commit_author: veecode-bot<github-admin@vee.codes>
+          commit_message: "Update catalog-info.yaml with cluster info"
+          push_options: '--force'
+
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+            name: component-catalog
+
+  ingress-apply:
+    name: Ingress Configuration
+    runs-on: ubuntu-latest
+    needs: kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+        
+    ### Usin k8s context
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kube-config
+          path: ~/.kube
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Add Postgresql Helm repository
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+    
+      - name: Install Postgresql
+        run: |
+          helm upgrade --install postgresql bitnami/postgresql --version 15.5.17 -f postgres.yaml -n vkpr --create-namespace
+
+      - name: Apply Prometheus CRD from ServiceMonitor
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
+        
+      - name: Add Kong Helm repository
+        run: |
+          helm repo add kong https://charts.konghq.com
+          helm repo update
+  
+      - name: Install Kong
+        run: |
+          helm upgrade --install kong kong/kong --version 2.39.3 -f kong.yaml -n vkpr --create-namespace
+
+      - name: Apply Kong Plugins
+        run: |
+            kubectl apply -f kong-acme.yaml -n vkpr
+            kubectl apply -f kong-plugin-basicauth.yaml -n vkpr
+            kubectl apply -f kong-plugin-prometheus.yaml -n vkpr    
+            kubectl apply -f kong-plugin-otlp.yaml -n vkpr
+  instrumentation-apply:
+    name: Instrumentation Configuration
+    runs-on: ubuntu-latest
+    needs: kubeconfig
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY}}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY}}
+          aws-region: ${{ secrets.AWS_REGION}}
+ 
+    ### Usin k8s context
+      - name: Download kubeconfig artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kube-config
+          path: ~/.kube
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Add OpenTelemetry Helm repository
+        run: |
+          helm repo add opentelemetry-helm https://open-telemetry.github.io/opentelemetry-helm-charts
+          helm repo update
+  
+      - name: Install OpenTelemetry Collector
+        run: |
+          helm upgrade --install opentelemetry-operator opentelemetry-helm/opentelemetry-operator --wait --version 0.63.1 -n vkpr --create-namespace \
+            --set manager.collectorImage.repository=otel/opentelemetry-collector-k8s \
+            --set admissionWebhooks.certManager.enabled=false \
+            --set admissionWebhooks.autoGenerateCert.enabled=true           
+
+      - name: Apply OpenTelemetry Collector configuration
+        run: |
+          sleep 5
+          kubectl apply -f - <<EOF
+          apiVersion: opentelemetry.io/v1beta1
+          kind: OpenTelemetryCollector
+          metadata:
+            name: otel
+            namespace: vkpr
+          spec:
+            config:
+              receivers:
+                otlp:
+                  protocols:
+                    grpc:
+                      endpoint: 0.0.0.0:4317
+                    http:
+                      endpoint: 0.0.0.0:4318
+              processors:
+                memory_limiter:
+                  check_interval: 1s
+                  limit_percentage: 75
+                  spike_limit_percentage: 15
+                batch:
+                  send_batch_size: 10000
+                  timeout: 10s
+              exporters:
+                otlp:
+                  endpoint: 34.199.187.50:30003
+                  tls:
+                    insecure: true
+              service:
+                pipelines:
+                  traces:
+                    receivers: [otlp]
+                    processors: [memory_limiter, batch]
+                    exporters: [otlp]
+          EOF
+
+      - name: Apply OpenTelemetry auto-instrumentation
+        run: |
+          sleep 5        
+          kubectl apply -f instrumentation.yaml -n vkpr            
+
+      - name: Add Prometheus-stack Helm repository
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Install Prometheus-stack 
+        run: |
+          helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack --version 55.5.0 -n vkpr -f prometheus-stack.yaml --create-namespace
+
+      - name: Add Loki Helm repository
+        run: |
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Install Loki Promtail
+        run: |
+          helm upgrade --install loki grafana/loki-stack --version 2.9.11 -f loki.yaml -n vkpr --create-namespace
+
+      # Getting the UID from datasources
+      - name: Getting uid from Prometheus datasource
+        continue-on-error: true
+        run: |
+          export UID_METRICS_DASHBOARD=$(curl -k -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}" --url https://grafana.obs-central-apr.platform.vee.codes/api/datasources | jq '.[] | select(.type == "prometheus")'.uid)
+          echo "UID_METRICS = $UID_METRICS_DASHBOARD" 
+          if [ -z "$UID_METRICS_DASHBOARD" ]; then
+              echo "Error: The UID is empty. There may have been an issue."
+              exit 1
+          else
+              echo "UID found: $UID_METRICS_DASHBOARD"
+          fi          
+          echo "UID_METRICS=$UID_METRICS_DASHBOARD" >> $GITHUB_ENV
+
+      # Change UID from defaults dashboard
+      - name: Changing uid of dashboard from Prometheus
+        continue-on-error: true
+        run: |
+          jq '(.dashboard.panels[].datasource | select(.type == "prometheus")).uid |= ${{ env.UID_METRICS }}' "dashboard-overview.json" > ${{ env.CLUSTER_NAME }}-dashboard-overview.json
+          cat ${{ env.CLUSTER_NAME }}-dashboard-overview.json
+
+      #DELETE old Dashboards on Grafana API
+      - name: Delete old Dashboards from project
+        continue-on-error: true
+        run: |
+          TAG="blog-demo-cluster"
+          # Passo 1: Verificar se existem painéis com a tag específica
+          response=$(curl -k -s -o /dev/null -w "%{http_code}" -X GET "https://grafana.obs-central-apr.platform.vee.codes/api/search?tag=${TAG}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}")
+          if [ "$response" -ne 200 ]; then
+              echo "Não foram encontrados painéis com a tag '${TAG}'. Nenhum painel será excluído."
+              exit 0
+          fi
+          # Passo 2: Obter lista de UIDs dos painéis com a tag específica
+          panel_uids=$(curl -k -s -X GET "https://grafana.obs-central-apr.platform.vee.codes/api/search?tag=${TAG}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}" | jq -r '.[] | .uid')
+          
+          # Passo 3: Excluir cada painel obtido no passo 1
+          for panel_uid in $panel_uids; do
+              response=$(curl -k -s -o /dev/null -w "%{http_code}" -X DELETE "https://grafana.obs-central-apr.platform.vee.codes/api/dashboards/uid/${panel_uid}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}")
+              if [ "$response" -eq 200 ]; then
+                  echo "Painel com ID ${panel_uid} excluído com sucesso."
+              else
+                  echo "Erro ao excluir o painel com UID ${panel_uid}. Status code: ${response}"
+              fi
+          done
+          
+      #POST Dashboards on Grafana API
+      - name: Post Overview dashboard
+        continue-on-error: true
+        run: |
+          curl -k -X POST -d @${{ env.CLUSTER_NAME }}-dashboard-overview.json \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}" \
+          --url https://grafana.obs-central-apr.platform.vee.codes/api/dashboards/db

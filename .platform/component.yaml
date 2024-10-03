@@ -1,0 +1,30 @@
+apiVersion: veecode.backstage.io/v1alpha1
+kind: Cluster
+metadata:
+  name: "blog-demo-cluster"
+  environment:
+    cluster_type: ec2
+    domain: vkpr.platform.vee.codes
+    ingress_type: kong
+    certificate_account_email: platformss@vee.codes
+    certificate_environment_type: staging
+    grafana_obs_api: https://grafana.obs-central-apr.platform.vee.codes
+  annotations:
+    github.com/project-slug: veecode-homolog/blog-demo-cluster
+    grafana/dashboard-selector: blog-demo-cluster
+    grafana/alert-label-selector: "alertname=blog-demo-cluster" 
+    backstage.io/techdocs-ref: dir:..
+    github.com/workflows: terraform-deploy.yml,start-instance.yml,stop-instance.yml,kubeconfig.yml,terraform-destroy.yml   
+    cluster/instructions: |
+      ssh -i ./key-pair.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} 
+      "mkdir -p .kube && k3d kubeconfig get ${CLUSTER_NAME} > ~/.kube/config"
+      scp -i ./key-pair.pem ${EC2_USER}@${EC2_HOST}:~/.kube/config ./config
+      yq e 'del(.clusters[0].cluster.certificate-authority-data)' -i ~/.kube/config
+      yq e '.clusters[0].cluster.insecure-skip-tls-verify=true' config -i
+      yq e '.clusters[0].cluster.server = "https://${EC2_HOST}:38517"' config -i
+spec:
+  type: ec2
+  lifecycle: experimental
+  owner: "group:default/admin"
+  environment: 'environment:default/platform_homolog_environment'
+  

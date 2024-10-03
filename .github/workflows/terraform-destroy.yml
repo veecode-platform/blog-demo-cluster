@@ -1,0 +1,128 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+
+env:
+  CLUSTER_NAME: blog-demo-cluster
+  DEVPORTAL_CLUSTER_NAME: "dd69495e-d62a-426d-aa00-b4d71e43581b"
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .terraform/**
+            .terraform.lock.hcl
+            plan.cache
+          key: terraform-lock-${{ github.head_ref || github.ref_name }}
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init 
+        run: |
+            cat main.tf 
+            terraform init
+            
+  destroy:
+    runs-on: ubuntu-latest
+    needs: init
+    permissions:
+      contents: write    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .terraform/**
+            .terraform.lock.hcl
+            plan.cache
+          key: terraform-lock-${{ github.event.workflow_run.head_branch }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform destroy 
+        run: |
+          terraform init
+          terraform destroy -auto-approve
+
+      - name: GitHub Action for DigitalOcean - doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_TOKEN }}
+
+      - name: Configure kubectl for the DigitalOcean Cluster
+        run: |
+          doctl kubernetes cluster kubeconfig save ${{ env.DEVPORTAL_CLUSTER_NAME }}
+
+      - name: Extract Cluster Name from YAML
+        run: |
+          CLUSTER_NAME=$(yq e '.metadata.name' ./.platform/component.yaml)
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
+          echo "Cluster Name capturado: $CLUSTER_NAME"
+  
+      - name: Delete Secret from DigitalOcean Cluster
+        run: |
+          kubectl delete secret ${{ env.CLUSTER_NAME }}-secret -n $GITHUB_REPOSITORY_OWNER || true
+
+      - name: Removing K8s Service Account Configuration
+        run: |
+          yq e '''
+                del(.metadata.annotations."veecode/cluster-name") |
+                del(.metadata.annotations."kubernetes.io/*")
+               ''' -i .platform/component.yaml
+
+      - name: Publish catalog info
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          repository: ".platform/"
+          commit_user_name: veecode-bot
+          commit_user_email: github-admin@vee.codes
+          commit_author: veecode-bot<github-admin@vee.codes>
+          commit_message: "Update catalog-info.yaml with cluster info"
+          push_options: '--force'
+               
+      - name: Delete Cluster from ArgoCD
+        continue-on-error: true
+        run: |
+          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+          rm argocd-linux-amd64        
+          argocd cluster rm -y k3d-blog-demo-cluster --server argocd.apr.vee.codes --auth-token ${{ secrets.ARGOCD_TOKEN }}
+      #DELETE Dashboards on Grafana API
+      - name: Delete Dashboards from project
+        continue-on-error: true
+        run: |
+          TAG="blog-demo-cluster"
+          # Passo 1: Verificar se existem painéis com a tag específica
+          response=$(curl -s -o /dev/null -w "%{http_code}" -X GET "https://grafana.platform.vee.codes/api/search?tag=${TAG}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}")
+          if [ "$response" -ne 200 ]; then
+              echo "Não foram encontrados painéis com a tag '${TAG}'. Nenhum painel será excluído."
+              exit 0
+          fi
+          # Passo 2: Obter lista de UIDs dos painéis com a tag específica
+          panel_uids=$(curl -s -X GET "https://grafana.platform.vee.codes/api/search?tag=${TAG}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}" | jq -r '.[] | .uid')
+          
+          # Passo 3: Excluir cada painel obtido no passo 1
+          for panel_uid in $panel_uids; do
+              response=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "https://grafana.platform.vee.codes/api/dashboards/uid/${panel_uid}" -H "Authorization: Bearer ${{ secrets.GRAFANA_API_TOKEN }}")
+              if [ "$response" -eq 200 ]; then
+                  echo "Painel com ID ${panel_uid} excluído com sucesso."
+              else
+                  echo "Erro ao excluir o painel com UID ${panel_uid}. Status code: ${response}"
+              fi
+          done
