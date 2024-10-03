@@ -14,11 +14,6 @@ data "aws_ami" "amazon-linux" {
   }
 }
 
-data "aws_route53_zone" "selected" {
-  name         = "${local.config.domain}"
-  private_zone = false
-}
-
 ### RESOURCES
 
 resource "aws_security_group" "web_security_group" {
