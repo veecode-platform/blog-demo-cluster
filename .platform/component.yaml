@@ -9,22 +9,23 @@ metadata:
     certificate_account_email: platformss@vee.codes
     certificate_environment_type: staging
     grafana_obs_api: https://grafana.obs-central-apr.platform.vee.codes
+    public_ip: 107.20.188.181
   annotations:
     github.com/project-slug: veecode-homolog/blog-demo-cluster
     grafana/dashboard-selector: blog-demo-cluster
-    grafana/alert-label-selector: "alertname=blog-demo-cluster" 
+    grafana/alert-label-selector: "alertname=blog-demo-cluster"
     backstage.io/techdocs-ref: dir:..
-    github.com/workflows: terraform-deploy.yml,start-instance.yml,stop-instance.yml,kubeconfig.yml,terraform-destroy.yml   
-    cluster/instructions: |
-      ssh -i ./key-pair.pem -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} 
-      "mkdir -p .kube && k3d kubeconfig get ${CLUSTER_NAME} > ~/.kube/config"
-      scp -i ./key-pair.pem ${EC2_USER}@${EC2_HOST}:~/.kube/config ./config
-      yq e 'del(.clusters[0].cluster.certificate-authority-data)' -i ~/.kube/config
-      yq e '.clusters[0].cluster.insecure-skip-tls-verify=true' config -i
-      yq e '.clusters[0].cluster.server = "https://${EC2_HOST}:38517"' config -i
+    github.com/workflows: terraform-deploy.yml,start-instance.yml,stop-instance.yml,kubeconfig.yml,terraform-destroy.yml
+    cluster/instructions: "# Run the following commands to import the kubeconfig:\n  ssh -i ./cert.pem -o StrictHostKeyChecking=no $USERNAME@$107.20.188.181 \"mkdir -p .kube && k3d kubeconfig get k3s > ~/.kube/config\"\n  scp -i ./cert.pem $USERNAME@$107.20.188.181:~/.kube/config ~/.kube/config-blog-demo-cluster\n  yq -e 'del(.clusters[0].cluster.certificate-authority-data) | .clusters[0].cluster.insecure-skip-tls-verify=true | .clusters[].cluster.server |= sub(\"0.0.0.0\", \"107.20.188.181\")' -i ~/.kube/config-blog-demo-cluster\n  export KUBECONFIG=~/.kube/config-blog-demo-cluster\n  kubectl get pods -A\n"
+    veecode/cluster-name: blog-demo-cluster
+    kubernetes.io/secret-name: blog-demo-cluster-secret
+    kubernetes.io/secret-namespace: veecode-platform
+    kubernetes.io/auth-provider: custom
+    kubernetes.io/api-server: https://107.20.188.181:6550
+    kubernetes.io/skip-tls-verify: "true"
+    kubernetes.io/skip-metrics-lookup: "false"
 spec:
   type: ec2
   lifecycle: experimental
   owner: "group:default/admin"
   environment: 'environment:default/platform_homolog_environment'
-  
