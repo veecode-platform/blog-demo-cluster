@@ -1,0 +1,21 @@
+name: Recover
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recover:
+    name: Create Cluster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write secret to file
+        run: |
+          echo "${{ secrets.KEYPAIR }}" > cert.pem
+          chmod 600 cert.pem
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: cert.pem
+          path: cert.pem
